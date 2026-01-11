@@ -858,6 +858,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"AVOID: {avoids}\n"
             f"HISTORY:\n{history_str}\n"
             f"Jarvis:"
+            
+        # [PHASE 35] Smart Follow-Up Logic (Busy/Bye Handler)
+        # If user says "Bye" during the day, we check back in 2 hours.
+        text_lower = user_text.lower()
+        is_night = datetime.now().hour >= 22 or datetime.now().hour < 6
+        
+        if any(w in text_lower for w in ["bye", "class", "lecture", "busy", "meeting", "chhod", "baad me"]) and not is_night:
+             # Schedule Proactive Check-in
+             delay_mins = 120 # 2 Hours
+             
+             async def follow_up_job(context: ContextTypes.DEFAULT_TYPE):
+                 # Don't text if user messaged recently (check history timestamps if possible, but basic is fine)
+                 # Proactive Text
+                 msgs = [
+                     "Hey, free now?",
+                     "Lecture over?",
+                     "Just checking in, how was it?",
+                     "Bored yet? 🥱"
+                 ]
+                 import random
+                 await context.bot.send_message(chat_id=user_id, text=random.choice(msgs))
+                 
+             context.job_queue.run_once(follow_up_job, delay_mins * 60)
+             logger.info(f"⏳ Proactive Follow-up scheduled for {user_id} in {delay_mins} mins.")
         )
     
         # 3. Inject History into Prompt
