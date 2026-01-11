@@ -15,6 +15,7 @@ def parse_reminder(text: str):
     triggers = ["remind me to", "remind me", "wake me up at", "wake up at", "text me at", "ping me at", "alarm at"]
     
     context_text = text.lower()
+    time_str = context_text # Fix: Initialize time_str
     
     # 1.5 Hinglish Pre-processing
     intent_map = {
