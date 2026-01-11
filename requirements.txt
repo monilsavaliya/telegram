@@ -1,0 +1,15 @@
+python-telegram-bot
+google-generativeai
+python-dotenv
+flask
+apscheduler
+httpx
+pillow
+gTTS
+dateparser
+groq
+beautifulsoup4
+firebase-admin
+google-auth-oauthlib
+google-auth-httplib2
+networkx
