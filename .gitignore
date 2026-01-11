@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.log
+*.zip
+venv/
+backups/
+chrome_history_temp.db
+ngrok*
+token.pickle
+client_secret.json
+sessions.json
+user_memory.json
+user_routines.json
+behavior_logs.json
+brain.db
+run_forever.sh

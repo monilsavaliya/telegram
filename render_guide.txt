@@ -1,0 +1,5 @@
+Build Command:
+pip install -r requirements.txt
+
+Start Command:
+python telegram_main.py

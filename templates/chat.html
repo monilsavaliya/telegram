@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChatX | Future AI</title>
+    <!-- Phosphor Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css?v=2">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Sidebar (Default Collapsed) -->
+        <aside class="sidebar collapsed">
+            <header class="sidebar-header">
+                <div class="user-avatar" style="background-image: url('/static/img/logo.png'); background-color: #000;">
+                </div>
+                <div class="header-actions">
+                    <span
+                        style="color: #fff; font-weight: 600; font-size: 18px; margin-right: auto; padding-left: 10px;">ChatX</span>
+                    <i class="ph ph-chat-circle-text"></i>
+                    <i class="ph ph-dots-three-vertical"></i>
+                </div>
+            </header>
+            <div class="search-bar">
+                <div class="search-input-wrapper">
+                    <i class="ph ph-magnifying-glass"></i>
+                    <input type="text" placeholder="Search or start new chat">
+                </div>
+            </div>
+            <div class="contact-list">
+                <div class="contact-item active">
+                    <div class="avatar-wrapper">
+                        <div class="avatar"
+                            style="background-image: url('/static/img/logo.png'); background-color: #000;">
+                        </div>
+                    </div>
+                    <div class="contact-info">
+                        <div class="contact-top">
+                            <span class="contact-name">Omni Bot</span>
+                            <span class="contact-time">NOW</span>
+                        </div>
+                        <div class="contact-bottom">
+                            <span class="contact-status">Online & Ready</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SYSTEM MODULES DASHBOARD -->
+                <div class="modules-header">
+                    <span>ACTIVE SYSTEM MODULES</span>
+                </div>
+
+                <div class="module-item">
+                    <div class="module-icon">🚇</div>
+                    <div class="module-info">
+                        <span class="module-name">Metro Navigation</span>
+                        <span class="module-desc">Delhi NCR Route Optimization</span>
+                    </div>
+                    <div class="module-status"></div>
+                </div>
+
+                <div class="module-item">
+                    <div class="module-icon">🚖</div>
+                    <div class="module-info">
+                        <span class="module-name">Uber Integration</span>
+                        <span class="module-desc">Live Ride Estimates & Booking</span>
+                    </div>
+                    <div class="module-status"></div>
+                </div>
+
+                <div class="module-item">
+                    <div class="module-icon">🎬</div>
+                    <div class="module-info">
+                        <span class="module-name">Cinema Intelligence</span>
+                        <span class="module-desc">TMDB Movie Ratings & Search</span>
+                    </div>
+                    <div class="module-status"></div>
+                </div>
+
+                <div class="module-item">
+                    <div class="module-icon">🛍️</div>
+                    <div class="module-info">
+                        <span class="module-name">Global Shopping</span>
+                        <span class="module-desc">Amazon India Search (Affiliate)</span>
+                    </div>
+                    <div class="module-status"></div>
+                </div>
+
+                <div class="module-item">
+                    <div class="module-icon">📚</div>
+                    <div class="module-info">
+                        <span class="module-name">Open Library</span>
+                        <span class="module-desc">Book Search & Reading</span>
+                    </div>
+                    <div class="module-status"></div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-area">
+            <header class="chat-header">
+                <div class="avatar"
+                    style="background-image: url('https://ui-avatars.com/api/?name=Omni+Bot&background=7c3aed&color=fff');">
+                </div>
+                <div class="chat-info">
+                    <span class="chat-name">Omni Bot</span>
+                    <span class="chat-status">online</span>
+                </div>
+                <div class="header-actions">
+                    <i class="ph ph-list" id="sidebar-toggle" style="margin-right: 15px; font-size: 24px;"></i>
+                    <i class="ph ph-magnifying-glass"></i>
+                    <i class="ph ph-dots-three-vertical"></i>
+                </div>
+            </header>
+
+            <div class="message-list" id="message-list">
+                <div class="date-divider"><span>Today</span></div>
+
+                <div class="message sent">
+                    <div class="bubble">
+                        Hello! Is this the Metro Bot?
+                        <span class="meta">12:00 PM <i class="ph ph-checks"></i></span>
+                    </div>
+                </div>
+
+                <div class="message received">
+                    <div class="bubble">
+                        Yes! I am ready to help you navigate via Metro. 🚇
+                        <span class="meta">12:01 PM</span>
+                    </div>
+                </div>
+            </div>
+
+            <footer class="chat-input-area">
+                <button class="icon-btn"><i class="ph ph-smiley"></i></button>
+                <button class="icon-btn" id="attach-btn"><i class="ph ph-plus"></i></button>
+
+                <div class="attachment-menu" id="attachment-menu">
+                    <div class="menu-item" onclick="sendLocation()">
+                        <div class="menu-icon location"><i class="ph ph-map-pin"></i></div>
+                        <span>Location</span>
+                    </div>
+                    <div class="menu-item">
+                        <div class="menu-icon image"><i class="ph ph-image"></i></div>
+                        <span>Image</span>
+                    </div>
+                    <div class="menu-item">
+                        <div class="menu-icon video"><i class="ph ph-video-camera"></i></div>
+                        <span>Video</span>
+                    </div>
+                    <div class="menu-item">
+                        <div class="menu-icon audio"><i class="ph ph-microphone"></i></div>
+                        <span>Audio</span>
+                    </div>
+                </div>
+
+                <div class="input-wrapper">
+                    <input type="text" id="message-input" placeholder="Type a message">
+                </div>
+
+                <button class="send-btn-container" id="send-btn">
+                    <i class="ph ph-paper-plane-right"></i>
+                </button>
+
+                <div id="audio-recorder" class="hidden">
+                    <button class="icon-btn" onclick="sendMessage()"><i class="ph ph-paper-plane-right"></i></button>
+            </footer>
+        </main>
+    </div>
+    <script src="/static/js/main.js?v=2"></script>
+</body>
+
+</html>

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jarvis Visual Cortex</title>
+    <!-- Modern Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0f0f12;
+            --card-bg: rgba(30, 30, 40, 0.7);
+            --accent-color: #00f2ff;
+            --secondary-accent: #b0fb5d;
+            --text-color: #ffffff;
+            --glass-border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Outfit', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-image: radial-gradient(circle at 10% 20%, rgba(0, 242, 255, 0.1) 0%, transparent 20%);
+        }
+
+        h1 {
+            font-weight: 700;
+            text-align: center;
+            background: linear-gradient(90deg, var(--accent-color), var(--secondary-accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 30px;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        /* Glassmorphism Card */
+        .card {
+            background: var(--card-bg);
+            backdrop-filter: blur(10px);
+            border: var(--glass-border);
+            border-radius: 20px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding-bottom: 10px;
+        }
+
+        .card-header h2 {
+            margin: 0;
+            font-size: 1.2rem;
+        }
+
+        .badge {
+            background: var(--accent-color);
+            color: #000;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .stat-item {
+            text-align: center;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            padding: 10px;
+        }
+
+        .stat-val {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: var(--secondary-accent);
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            opacity: 0.7;
+        }
+
+        /* Routine List */
+        .routine-item {
+            display: flex;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 12px;
+            margin-bottom: 8px;
+            transition: transform 0.2s;
+        }
+
+        .routine-item:active {
+            transform: scale(0.98);
+        }
+
+        .routine-icon {
+            font-size: 1.5rem;
+            margin-right: 15px;
+        }
+
+        .routine-details h3 {
+            margin: 0 0 5px 0;
+            font-size: 1rem;
+        }
+
+        .routine-details p {
+            margin: 0;
+            font-size: 0.8rem;
+            opacity: 0.6;
+        }
+
+        .btn-action {
+            display: block;
+            width: 100%;
+            padding: 15px;
+            border: none;
+            border-radius: 12px;
+            background: linear-gradient(135deg, var(--accent-color), #00a8ff);
+            color: #000;
+            font-weight: bold;
+            font-size: 1rem;
+            cursor: pointer;
+            text-align: center;
+            text-decoration: none;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <h1>Jarvis Dashboard</h1>
+
+        <!-- Status Card -->
+        <div class="card">
+            <div class="card-header">
+                <h2>System Status</h2>
+                <span class="badge">ONLINE</span>
+            </div>
+            <div class="stat-grid">
+                <div class="stat-item">
+                    <div class="stat-val">{{ station_count }}</div>
+                    <div class="stat-label">Metro Stations</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-val">Active</div>
+                    <div class="stat-label">Behavior Engine</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Routines Card -->
+        <div class="card">
+            <div class="card-header">
+                <h2>Your Routines (Detected)</h2>
+            </div>
+
+            {% if routines %}
+            {% for r in routines %}
+            <div class="routine-item">
+                <div class="routine-icon">⚡</div>
+                <div class="routine-details">
+                    <h3>{{ r.routine_name }}</h3>
+                    <p>Approx {{ r.trigger_time_approx }} on {{ r.trigger_days|join(', ') }}</p>
+                </div>
+            </div>
+            {% endfor %}
+            {% else %}
+            <div class="routine-item" style="justify-content: center; opacity: 0.5;">
+                <p>Studying your behavior... (24h left)</p>
+            </div>
+            {% endif %}
+        </div>
+
+        <a href="#" class="btn-action">Scan New Routines</a>
+    </div>
+
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand(); // Fullscreen
+    </script>
+</body>
+
+</html>
