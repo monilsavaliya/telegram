@@ -1,10 +1,11 @@
 import requests
 import urllib.parse
 import json
+import os
 
 class AmazonAPI:
     def __init__(self):
-        self.api_key = "e4f1b7dd57msh696dd83ac691748p1e205cjsnc9400622fd1e"
+        self.api_key = os.getenv("RAPID_AMAZON_KEY", "YOUR_RAPID_API_KEY")
         self.host = "real-time-amazon-data.p.rapidapi.com"
         self.base_url = "https://real-time-amazon-data.p.rapidapi.com"
 

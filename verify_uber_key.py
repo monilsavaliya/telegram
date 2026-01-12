@@ -1,8 +1,9 @@
 import requests
 import json
+import os
 
 # User's Key
-UBER_SERVER_TOKEN = "8pnWKMKgwLMJI9sihp7H3SLpQTtZTuU1C32uDAZS"
+UBER_SERVER_TOKEN = os.getenv("UBER_SERVER_TOKEN", "YOUR_KEY_HERE")
 
 # Dummy Coordinates (New Delhi)
 # Start: IIT Delhi, End: Connaught Place
