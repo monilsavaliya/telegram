@@ -54,7 +54,7 @@ async def decide_intent_ai(text: str, ai_generator=None) -> str:
                 f"- If asking for travel/route/navigation OR preferences like 'fastest', 'min exchange' -> METRO\n"
                 f"- If wanting to buy/check price -> SHOPPING\n"
                 f"- If wanting to reading/find book -> BOOK\n"
-                f"- If asking for taxi/uber -> CAB\n"
+                f"- If asking for taxi/uber OR generic travel (e.g. 'go to start', 'take me to X', 'I want to go to Y') -> CAB\n"
                 f"- If asking to set an alarm/reminder/wake up -> REMINDER\n"
                 f"- If casual chat/greeting -> GENERAL\n"
                 f"Reply ONLY with the Intent Word."

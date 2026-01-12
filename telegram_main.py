@@ -9,9 +9,9 @@ import io
 import PIL.Image
 import pytz
 from datetime import datetime, timedelta
-from telegram import Update
+from telegram import Update, InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from dotenv import load_dotenv
 
 # Load Environment Variables
@@ -20,7 +20,11 @@ load_dotenv()
 # --- JARVIS MODULES ---
 from network_utils import safe_post, KeyManager, close_client
 from metro_engine import handle_metro, METRO_GRAPH
-from shopping_engine import handle_shopping, generate_amazon_link
+# from shopping_engine import handle_shopping, generate_amazon_link # Legacy Removed
+from shopping_service_dev.shopping_bot import ShoppingBot # New Engine
+from taxi_engine import TaxiEngine
+from ride_card_renderer import RideCardRenderer
+from location_service import LocationService
 from intent_engine import decide_intent_ai
 from memory_core import memory_db
 from gemini_engine import generate_gemini_text, generate_gemini_vision
@@ -48,7 +52,14 @@ else:
     BACKGROUND_KEYS = GEMINI_API_KEYS[4:]
 
 mgr_primary = KeyManager(PRIMARY_KEYS)
+
 mgr_background = KeyManager(BACKGROUND_KEYS)
+
+# Initialize Engines
+shopping_bot = ShoppingBot()
+taxi_engine = TaxiEngine()
+taxi_renderer = RideCardRenderer()
+taxi_loc_service = LocationService()
 
 # Tiered Models
 # Tiered Models
@@ -85,7 +96,7 @@ async def ai_router_classify(user_text):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={ROUTER_KEY}"
         prompt = (
             f"Classify Query: '{user_text}'\n"
-            "Intents: SHOPPING, METRO, MOVIE, CAB, REMINDER, GENERAL, EMOTIONAL_SUPPORT.\n"
+            "Intents: SHOPPING (Amazon/Products), METRO, MOVIE, CAB, REMINDER, GENERAL, EMOTIONAL_SUPPORT.\n"
             "Tiers: lightning (simple), standard (normal), premium (complex reasoning).\n"
             "Output format: TIER|INTENT"
         )
@@ -343,11 +354,11 @@ async def analyze_implicit_intent(user_text, user_id):
         prompt = (
             f"Analyze chat from User {user_id}: '{user_text}'. "
             "Extract JSON only: {"
-            " 'profile': {'nickname': '...', 'relationship_mode': 'GF/MOM/PA', 'language_style': '...', 'location': '...', 'avoid_action': '...', 'new_alias': {'trigger': 'code red', 'meaning': 'call mom'}}, "
-            " 'routine': {'day': 'Monday/Tuesday...', 'item': 'College 9AM'}, "
+            " 'profile': {'nickname': '...', 'relationship_mode': 'GF/MOM/PA', 'language_style': '...', 'location': '...', 'avoid_action': '...', 'style_rule': 'Always use Red Heart/ concise...', 'new_alias': {'trigger': 'code red', 'meaning': 'call mom'}}, "
+            " 'routine': {'day': 'Monday/Everyday', 'item': 'Good Morning Text 8AM'}, "
             " 'event': {'type': 'check-in', 'time': 'YYYY-MM-DDTHH:MM:SS', 'desc': '...', 'context': '...'}"
             "}"
-            "NOTE: 'new_alias' is when user says 'Learn that X means Y'."
+            "NOTE: 'style_rule' is for persistent formatting demands (e.g. 'always start with Hey')."
         )
         
         # Use Background Keys
@@ -373,6 +384,16 @@ async def analyze_implicit_intent(user_text, user_id):
                         curr_aliases[v["trigger"].lower()] = v["meaning"]
                         memory_db.update_profile(user_id, "aliases", curr_aliases)
                         logger.info(f"🔗 Learned ALIAS: {v['trigger']} -> {v['meaning']}")
+                elif k == "style_rule" and v:
+                    # Learn Style Rule
+                    curr_rules = memory_db.get_profile(user_id)["profile"].get("preferences", {}).get("rules", [])
+                    if v not in curr_rules:
+                        curr_rules.append(v)
+                        # We need to update preferences dict inside profile
+                        curr_prefs = memory_db.get_profile(user_id)["profile"].get("preferences", {})
+                        curr_prefs["rules"] = curr_rules
+                        memory_db.update_profile(user_id, "preferences", curr_prefs)
+                        logger.info(f"🎨 Learned STYLE RULE: {v}")
                 elif v: memory_db.update_profile(user_id, k, v)
                 
         if data.get("routine"):
@@ -446,6 +467,16 @@ async def run_behavioral_checks(context):
             profile_data = memory_db.get_profile(user_id) # Safe fetch
             profile = profile_data.get("profile", {})
             preferences = profile_data.get("preferences", {})
+
+            # [PHASE 36] Sleep Mode Check 🛑
+            # If DND is set in routine_db, Skip Proactive Thoughts completely.
+            user_routine = routine_db.get_routines().get(user_id, {})
+            dnd_until = user_routine.get("dnd_until")
+            if dnd_until:
+                 dnd_dt = datetime.fromisoformat(dnd_until)
+                 if datetime.now() < dnd_dt:
+                      # User is asleep/busy. Silence.
+                      continue
 
             # [PHASE 37] Timetable Check (Dynamic)
             from timetable_manager import timetable_manager
@@ -709,12 +740,75 @@ async def send_book_page(update, context, chat_id, page_index, is_new=False):
             # Fallback if media is same or error
             await query.edit_message_caption(caption=caption, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
+async def handle_shopping_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles Shopping Next/Prev Buttons."""
+    query = update.callback_query
+    user_id = str(update.effective_user.id)
+    
+    direction = "next"
+    if "prev" in query.data:
+        direction = "prev"
+    
+    # Fetch Page
+    response = shopping_bot.get_next_page(user_id, direction=direction)
+    
+    if isinstance(response, dict) and response.get("type") == "photo_card":
+        # Formats
+        caption = response["caption"]
+        photo = response["photo"]
+        buttons = []
+        for row in response["buttons"]:
+            btn_row = []
+            for btn in row:
+                if "url" in btn:
+                    btn_row.append(InlineKeyboardButton(text=btn["text"], url=btn["url"]))
+                elif "callback_data" in btn:
+                     btn_row.append(InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"]))
+            buttons.append(btn_row)
+            
+        keyboard = InlineKeyboardMarkup(buttons)
+        
+        # Edit Media
+        try:
+            # Check if photo is valid URL
+            if not photo: photo = "https://via.placeholder.com/300?text=No+Image"
+            
+            # Use InputMediaPhoto to update image + caption cleanly
+            await query.edit_message_media(
+                media=InputMediaPhoto(media=photo, caption=caption, parse_mode=ParseMode.MARKDOWN),
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logger.error(f"Shopping Edit Error: {e}")
+            # Fallback if text only
+            await query.edit_message_caption(caption=caption, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+            
+    else:
+        # String response (End of results)
+        await query.edit_message_caption(caption=str(response))
+
 async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles Carousel Navigation."""
     query = update.callback_query
     await query.answer() # Ack
     
     data = query.data
+    
+    if "shopping_next" in data or "shopping_prev" in data:
+        await handle_shopping_nav(update, context)
+        return
+
+    # [PHASE 34] Taxi Booking Callbacks
+    if "book_taxi_" in data:
+        vehicle_id = data.replace("book_taxi_", "")
+        user_id = update.effective_user.id
+        msg = taxi_engine.select_vehicle(user_id, vehicle_id)
+        if msg:
+            await query.edit_message_text(msg)
+        else:
+            await query.edit_message_text("❌ Error selecting vehicle/Time's up.")
+        return
+
     if "book_" not in data: return
     
     # Parse action: book_next_0 -> go to 1
@@ -746,13 +840,48 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 from multimedia_engine import handle_multimedia
 
+# --- TAXI HELPERS ---
+async def track_taxi_driver_callback(context: ContextTypes.DEFAULT_TYPE):
+    """Updates the driver status message."""
+    job = context.job
+    user_id = job.data["user_id"]
+    msg_id = job.data["msg_id"]
+    
+    # Use global taxi_engine
+    dist, status_text, arrived = taxi_engine.get_driver_update(user_id)
+    
+    # Edit Message
+    try:
+        await context.bot.edit_message_text(
+            chat_id=job.chat_id,
+            message_id=msg_id,
+            text=status_text,
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        pass # Ignore "Message Not Modified" errors
+        
+    if arrived:
+        job.schedule_removal()
+        await context.bot.send_message(chat_id=job.chat_id, text="✅ **Trip Started!** Have a safe ride.")
+
+async def handle_live_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles 'Live Location' updates from User."""
+    if update.edited_message and update.edited_message.location:
+        user_id = update.effective_user.id
+        loc = update.edited_message.location
+        logger.info(f"📍 User {user_id} Live Loc: {loc.latitude}, {loc.longitude}")
+        # In future, update driver routing here
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     user_id = str(update.effective_user.id)
     user_name = update.effective_user.first_name
     
-    # 0. Book Search Bypass
-    if any(x in user_text.lower() for x in ["book", "novel", "author", "read "]):
+    # 0. Book Search Bypass (Avoid triggering on "Book a cab")
+    taxi_terms = ["cab", "taxi", "ride", "uber", "ola", "auto", "moto", "driver"]
+    if any(x in user_text.lower() for x in ["novel", "author", "read "]) or \
+       ("book" in user_text.lower() and not any(t in user_text.lower() for t in taxi_terms)):
         await handle_book_search(user_text, user_id, context)
         return
 
@@ -773,9 +902,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # 1. Decide Intent (Hive Mind: AI Router)
     # [PHASE 32] Force Reminder for Hinglish (Fixes "2 min ke bad" interpreted as CHAT)
+    # [PHASE 32] Force Reminder for Hinglish (Fixes "2 min ke bad" interpreted as CHAT)
     remind_triggers = ["remind", "wake", "alarm", "ke bad", "bad me", "bad text", "min bad", "yad dila", "msg krna", "text krna"]
+    
+    # [PHASE 33] Shopping Fast-Path (Regex & Session Sticky)
+    shop_triggers = ["buy", "price", "cost", "amazon", "flipkart", "shop", "gift", "suggestion", "suggest", "recommend", "shoe", "watch", "phone", "laptop", "sneaker", "drip", "systumm", "chapri", "jugaad", "brand", "show me", "clothes", "wear", "outfit", "dress"]
+    
+    # [PHASE 34] Taxi/Cab Triggers & Session Sticky
+    cab_triggers = ["cab", "taxi", "uber", "ola", "driver", "ride", "auto", "moto", "rapido", "book a ride", "gaadi", "gadi", "riksha", "rickshaw", "chalna hai", "drop", "pickup"]
+    
+    # Check for Active Session (Pagination/Refinement)
+    # If user is in a session, short commands like "next", "more", "yes", "no", "show me" should go to Shopping Logic
+    is_shopping_session = user_id in shopping_bot.sessions
+    
+    # Check for Active Taxi Session (Pickup/Drop/OTP)
+    taxi_state = taxi_engine.get_state(user_id)["state"]
+    is_taxi_session = taxi_state != "IDLE" and taxi_state != "BOOKED"
+    
+    intent = "UNKNOWN"
+    tier = "standard"
+
     if any(x in user_text.lower() for x in remind_triggers):
          tier, intent = "lightning", "REMINDER"
+    
+    elif is_taxi_session:
+        # Sticky Taxi Session (High Priority)
+        tier, intent = "lightning", "CAB"
+        
+    elif is_shopping_session and len(user_text.split()) < 5:
+        # Sticky Session: "Next", "More", "Show me"
+        tier, intent = "lightning", "SHOPPING"
+        
+    elif any(t in user_text.lower() for t in cab_triggers):
+        # Explicit Cab Keywords
+        tier, intent = "lightning", "CAB"
+        
+    elif any(t in user_text.lower() for t in shop_triggers):
+        # Explicit Shopping Keywords
+        tier, intent = "lightning", "SHOPPING"
+        
     else:
          tier, intent = await ai_router_classify(user_text)
     
@@ -867,35 +1032,69 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_tg_msg(user_id, "📍 Please tap 📎 **Clip Icon** -> 📍 **Location** to find nearest metro.")
 
     elif intent == "SHOPPING":
-        # 🛒 Intelligent Shopping Interpreter
+        # 🛒 Intelligent Shopping Interpreter (New Engine)
         # 1. Get User Context & Mood
         profile = memory_db.get_profile(user_id)["profile"]
-        context_str = json.dumps(profile.get("preferences", {}))
         
-        # [PHASE 19] Contextual Commerce
-        # Re-fetch current mood if not available in scope, but we can reuse the one from system prompt logic
-        # For safety, let's just peek at mood_manager again or assume it's passed.
-        # Ideally, we should unify mood fetching. Let's do a quick read.
+        # Detect Mood
         from mood_manager import detect_mood_from_emojis
         emoji_mood = detect_mood_from_emojis(user_text)
         shopping_mood = emoji_mood if emoji_mood else "Neutral"
         
-        # 2. Ask Groq (Fast) to refine the query with MOOD awareness
-        prompt = (
-            f"User Query: '{user_text}'. User Mood: '{shopping_mood}'. Profile: {context_str}. "
-            "Task: Convert this query into a specific, high-quality Amazon Search Keyword. "
-            "CRITICAL: Match the product to the mood. "
-            "Examples: "
-            " - Query='Comfort me', Mood='Horny/Lonely' -> Output: 'Male Masturbator' or 'Plush Toy' (Context dependent). "
-            " - Query='Bored', Mood='Bored' -> Output: 'Fidget Spinner' or 'Puzzle'. "
-            "If the query is explicit/slang, output specific safe product names. "
-            "Output ONLY the search term. No quotes."
-        )
+        # 2. Delegate to ShoppingBot 
+        # [PHASE 45] Hybrid Logic: Slang (Deterministic) vs Natural Language (AI Refined)
+        final_query = user_text
         
-        refined_query = await generate_ai_response(prompt, tier="lightning")
-        refined_query = refined_query.strip().replace('"', '') if refined_query else None
+        # A. Pagination Check (Fast Path)
+        if user_text.lower().strip() in ["next", "more", "show me", "continue", "show more"]:
+             pass # Let bot handle it
+             
+        # B. Slang Check (Deterministic Database) - ONLY for Short/Direct Slang
+        # If query is long (e.g. "clothes for sex time"), use AI to understand context instead of mapping "sex" -> "condoms"
+        elif shopping_bot.is_slang(user_text) and len(user_text.split()) < 5:
+             pass # ContextEngine handles single-word slang perfectly
+             
+        # C. Natural Language Refinement (AI)
+        else:
+             # Complex Sentence or Nuanced Request
+             prompt = (
+                 f"Task: Extract the Amazon Search Keyword from user request: '{user_text}'. "
+                 "Rules: \n"
+                 "1. 'shoes for men' -> 'Men's shoes'\n"
+                 "2. 'watch for gf' -> 'Fossil Women's Watch' (Infer Brand/Gender)\n"
+                 "3. 'clothes for party and sex time' -> 'Sexy Party Dresses' or 'Clubwear' (Capture INTENT, don't just keyword match 'sex')\n"
+                 "4. 'gift for mom' -> 'Saree' or 'Handbag' (Infer Category)\n"
+                 "Output ONLY the search keyword. No quotes."
+             )
+             refined = await generate_ai_response(prompt, tier="lightning")
+             if refined:
+                 final_query = refined.strip().replace('"', '')
+                 logger.info(f"🛒 AI Refined Query: '{user_text}' -> '{final_query}'")
+
+        response = shopping_bot.process_message(user_id, final_query, user_mood=shopping_mood)
         
-        await handle_shopping(user_text, user_id, send_tg_msg, refined_query=refined_query)
+        # 3. Handle Structured Response
+        if isinstance(response, dict) and response.get("type") == "photo_card":
+             # Send Photo Message
+             caption = response["caption"]
+             photo = response["photo"]
+             if not photo: photo = "https://via.placeholder.com/300?text=No+Image"
+             
+             buttons = []
+             for row in response["buttons"]:
+                btn_row = []
+                for btn in row:
+                    if "url" in btn:
+                        btn_row.append(InlineKeyboardButton(text=btn["text"], url=btn["url"]))
+                    elif "callback_data" in btn:
+                         btn_row.append(InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"]))
+                buttons.append(btn_row)
+            
+             keyboard = InlineKeyboardMarkup(buttons)
+             await context.bot.send_photo(chat_id=user_id, photo=photo, caption=caption, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+        else:
+             # Regular Text Response (e.g. "End of results" string)
+             await send_tg_msg(user_id, str(response))
         
     elif intent == "MEDIA":
         # Check if it's a Memory Query ("What did I watch?")
@@ -910,7 +1109,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_book_search(user_text, user_id, context)
         
     elif intent == "CAB":
-        await handle_cab(user_text, user_id, send_tg_msg)
+        await handle_cab(user_text, user_id, send_tg_msg, context)
 
     # Fallthrough for re-routed intents
     # [FIX] Added CHAT to handled intents list
@@ -1011,17 +1210,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "PRIME DIRECTIVE 2: Use EMOJIS warmth (to show emotion), but don't overdo it.\n"
             "PRIME DIRECTIVE 3: Use HINGLISH (Hindi+English mix) naturally if the user does.\n"
             "PRIME DIRECTIVE 4: KEEP IT SHORT. Text like a human (1-2 sentences max). No essays.\n"
+            "PRIME DIRECTIVE 5: You have an AMAZON SHOPPING module. If user asks for products, 'price of X', or uses slang like 'drip'/'systumm', triggers the Shopping Engine.\n"
             "EXCEPTION: ONLY if user says 'Goodnight', 'Bye', 'Sleep' -> THEN stop asking questions and let them rest.\n"
             f"AVOID: {avoids}\n"
+            f"USER RULES (STRICT): {preferences.get('rules', [])}\n"
             f"HISTORY:\n{history_str}\n"
             f"Jarvis:"
         )    
         # [PHASE 35] Smart Follow-Up Logic (Busy/Bye Handler)
-        # If user says "Bye" during the day, we check back in 2 hours.
         text_lower = user_text.lower()
         is_night = datetime.now().hour >= 22 or datetime.now().hour < 6
+
+        # 1. Sleep Mode Trigger
+        sleep_triggers = ["good night", "goodnight", "gn", "so ja", "sleep", "sleeping", "bye", "see you tomorrow", "kal milte"]
+        if is_night and any(t in text_lower for t in sleep_triggers):
+             # Set DND until 8 AM next morning
+             now = datetime.now()
+             tomorrow = now + timedelta(days=1)
+             wake_time = tomorrow.replace(hour=8, minute=0, second=0, microsecond=0)
+             
+             routine_db.set_dnd(user_id, wake_time)
+             logger.info(f"🌙 Sleep Mode Activated for {user_id} until {wake_time}")
+             
+             # Let the AI know so it can say a final goodnight
+             system_prompt += "\nNOTE: User is going to sleep. Say a warm goodnight and stop messaging until morning."
         
-        if any(w in text_lower for w in ["bye", "class", "lecture", "busy", "meeting", "chhod", "baad me"]) and not is_night:
+        # 2. Busy Mode Trigger (Daytime)
+        elif any(w in text_lower for w in ["bye", "class", "lecture", "busy", "meeting", "chhod", "baad me"]) and not is_night:
              # Schedule Proactive Check-in
              delay_mins = 120 # 2 Hours
              
@@ -1084,26 +1299,129 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if reply:
             update_history(user_id, "ai", reply)
 
-async def handle_cab(text: str, user_id: str, send_msg_func):
+async def handle_cab(text: str, user_id: str, send_msg_func, context=None):
     """
-    Generates an Uber Universal Link.
+    Main Handler for Taxi Logic (State Machine).
+    Context: Called from handle_message when intent is 'CAB' or during sticky session.
     """
-    dest_query = text.lower().replace("uber", "").replace("cab", "").replace("book", "").replace("to", "").strip()
+    from telegram import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
     
-    if not dest_query:
-        # Generic Open
-        msg = "🚕 *Opening Uber...*\nClick below to book a ride from your current location."
-        url = "https://m.uber.com/ul"
-    else:
-        # Destination Search
-        msg = f"🚕 *Uber to {dest_query.title()}*\nClick to confirm pickup & drop."
-        # Proper encoding for Universal Link with 'dropoff[formatted_address]' is complex without coordinates.
-        # Fallback to general open or search query if API supported.
-        # For now, simple open + text guidance.
-        url = "https://m.uber.com/ul/?action=setPickup&pickup=my_location"
+    # 1. Check for Cancellation
+    state_info = taxi_engine.get_state(user_id)
+    state = state_info["state"]
+    
+    if any(x in text.lower() for x in ["cancel", "stop", "abort"]) and state != "IDLE":
+         # Stop Tracking if any (Hard to access context.job_queue here without passing context)
+         # We accept that the job might run once more or need a global registry.
+         # For now, just reset logic.
+         msg = taxi_engine.cancel_ride(user_id)
+         await send_msg_func(user_id, msg, reply_markup=ReplyKeyboardRemove())
+         return
+
+    # 2. State Machine Routing
+    # Check if we are starting freshly OR if the intent was just triggered
+    if state == "IDLE" or any(k in text.lower() for k in ["cab", "taxi", "book", "gaadi"]):
+        # START NEW (Pass text for smart extraction)
         
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🚕 Book Uber", url=url)]])
-    await send_msg_func(user_id, msg, reply_markup=keyboard)
+        # [FIX] Look Back 1 Turn if text is short (e.g. "book a taxi")
+        # Example: User: "I want to go to Gurgaon" -> Bot: "Taxi?" -> User: "Yes"
+        combined_text = text
+        if len(text.split()) < 5:
+             # Fetch last user message from memory
+             hist = get_history_text(user_id)
+             if hist:
+                 # Extract last User line
+                 lines = [l for l in hist.split('\n') if l.startswith("User:")]
+                 if lines:
+                      last_msg = lines[-1].replace("User:", "").strip()
+                      # Only include if it was recent (we assume history is recent)
+                      combined_text = f"{last_msg} {text}"
+                      logger.info(f"🚖 Contextual Extraction using: '{combined_text}'")
+
+        # Fetch Aliases (for "Home", "Hostel", "Work" resolution)
+        prof_data = memory_db.get_profile(user_id)
+        aliases = prof_data.get("profile", {}).get("aliases", {})
+        
+        msg = taxi_engine.reset_session(user_id, initial_text=combined_text, user_aliases=aliases)
+        
+        # Check if we jumped straight to Options (Full Info provided)
+        new_state = taxi_engine.get_state(user_id)["state"]
+        
+        if new_state == "CHOOSING_RIDE":
+            # Render Vehicle Options immediately
+            opts = taxi_engine.get_state(user_id)["data"]["options"]
+            text_out, markup = taxi_renderer.render_vehicle_options(opts)
+            # Prefix the success message
+            await send_msg_func(user_id, msg) 
+            await send_msg_func(user_id, text_out, reply_markup=markup)
+            return
+
+        kb = [[KeyboardButton("📍 Share Current Location", request_location=True)]]
+        await send_msg_func(user_id, msg, reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True))
+        
+    elif state == "PICKUP":
+        # Handle Pickup Input (Text)
+        # Note: Location inputs go to handle_location, so this is text-only fallback
+        # Ideally we want to resolve address here
+        res = await taxi_loc_service.resolve_address(text)
+        if res:
+            msg = taxi_engine.handle_pickup(user_id, text=text, lat=res["lat"], lon=res["lon"], resolved_address=res["address"])
+        else:
+            msg = taxi_engine.handle_pickup(user_id, text=text)
+        
+        # [FIX] Check if we Auto-Advanced to Options
+        if isinstance(msg, list):
+             text_out, markup = taxi_renderer.render_vehicle_options(msg)
+             await send_msg_func(user_id, f"✅ Pickup Set.", reply_markup=ReplyKeyboardRemove())
+             await send_msg_func(user_id, text_out, reply_markup=markup)
+        else:
+             await send_msg_func(user_id, msg, reply_markup=ReplyKeyboardRemove())
+
+    elif state == "DROP":
+        # Handle Drop Input
+        res = await taxi_loc_service.resolve_address(text)
+        if res:
+             options = taxi_engine.handle_drop(user_id, text=text, lat=res["lat"], lon=res["lon"], resolved_address=res["address"])
+        else:
+             options = taxi_engine.handle_drop(user_id, text=text)
+             
+        # Render Options
+        text_out, markup = taxi_renderer.render_vehicle_options(options)
+        await send_msg_func(user_id, text_out, reply_markup=markup)
+
+    elif state == "WAITING_CONTACT":
+        # Phone Number Input
+        msg = taxi_engine.handle_contact(user_id, text)
+        await send_msg_func(user_id, msg)
+
+    elif state == "WAITING_OTP":
+        # OTP Input
+        result = taxi_engine.verify_otp(user_id, text)
+        await send_msg_func(user_id, result["message"])
+        
+        if result["status"] == "success" and context:
+             # Trigger Tracking
+             # We need a dummy message object to update later, but tracking callback handles it via ID usually
+             # Let's send a placeholder or use the last message ID?
+             # Ideally track_taxi_driver_callback updates a specific message.
+             # Let's send a fresh tracking card.
+             track_msg = await context.bot.send_message(chat_id=user_id, text="📡 Initializing Satellite Tracking...", parse_mode=ParseMode.MARKDOWN)
+             
+             context.job_queue.run_repeating(
+                  callback=track_taxi_driver_callback, 
+                  interval=5, 
+                  first=2, 
+                  chat_id=int(user_id),
+                  name=f"taxi_{user_id}",
+                  data={"user_id": user_id, "msg_id": track_msg.message_id}
+             ) 
+
+    elif state == "TRACKING":
+        await send_msg_func(user_id, "🚖 Driver is on the way! Type 'cancel' to stop.")
+        
+    else:
+        # Fallback
+        await send_msg_func(user_id, "🚕 Taxi Service Active. Say 'Cancel' to reset.")
 
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1359,7 +1677,8 @@ def main():
     application.add_handler(CommandHandler("sync_youtube", sync_youtube))
     application.add_handler(CommandHandler("clear_memory", clear_memory))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler(filters.LOCATION, handle_location))
+    application.add_handler(MessageHandler(filters.LOCATION & ~filters.UpdateType.EDITED_MESSAGE, handle_location))
+    application.add_handler(MessageHandler(filters.LOCATION & filters.UpdateType.EDITED_MESSAGE, handle_live_location)) # Taxi Live Loc
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo)) # Vision Handler
     application.add_handler(MessageHandler(filters.VOICE, handle_voice)) # Voice Handler
     application.add_handler(CallbackQueryHandler(handle_button_click)) # Button Handler
@@ -1426,7 +1745,13 @@ def main():
             
     if 'BrowserSpy' in locals() and BrowserSpy:
         try:
-            browser_spy = BrowserSpy(on_browser_history, asyncio.get_running_loop(), interval=60)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+            browser_spy = BrowserSpy(on_browser_history, loop, interval=60)
             browser_spy.start()
             logger.info("🕵️ Browser Spy Started.")
         except Exception as e:

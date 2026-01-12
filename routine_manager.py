@@ -21,8 +21,11 @@ class RoutineManager:
                 # [FIX] Handle Corrupted Data (List vs Dict)
                 if isinstance(data, list):
                      logger.warning("⚠️ Routine File is a LIST (Corrupted). Resetting to empty dict.")
-                     # Try to salvage if list contains dicts, otherwise wipe
-                     return {} # Safest to reset if schema is wrong
+                     # FIX: Write the clean dict back to disk immediately to stop future warnings
+                     self.routines = {}
+                     with open(ROUTINE_FILE, 'w') as out:
+                         json.dump({}, out, indent=4)
+                     return {}
                      
                 # Validation: Ensure all values are dicts
                 valid_data = {}
