@@ -28,6 +28,7 @@ from location_service import LocationService
 from intent_engine import decide_intent_ai
 from memory_core import memory_db
 from gemini_engine import generate_gemini_text, generate_gemini_vision
+from knowledge_engine import get_genz_news, get_weather, get_stock_price
 
 # ==========================================
 # CONFIGURATION
@@ -64,11 +65,11 @@ taxi_loc_service = LocationService()
 # Tiered Models
 # Tiered Models
 MODEL_TIERS = {
-    "router": ["gemini-2.5-flash"], 
-    "lightning": ["gemini-2.5-flash"], 
-    "standard": ["gemini-2.5-flash"], 
-    "premium": ["gemini-2.5-pro"],
-    "vision": ["gemini-2.5-flash"]
+    "router": ["gemini-1.5-flash"], 
+    "lightning": ["gemini-1.5-flash"], 
+    "standard": ["gemini-1.5-flash"], 
+    "premium": ["gemini-1.5-pro"],
+    "vision": ["gemini-1.5-flash"]
 }
 
 # Router Key (Dedicated)
@@ -431,9 +432,25 @@ async def run_behavioral_checks(context):
         active_users = memory_db.get_all_users() 
         
         for user_id in active_users:
-            async def sender(uid, msg, **kwargs):
+            async def sender(uid, msg, force=False, **kwargs):
+                """
+                Safe Sender with Anti-Spam (Smart Silence).
+                If user hasn't replied to the last bot message, we suppress proactive conversation
+                UNLESS it's a critical alert (force=True).
+                """
                 try:
+                    # 1. Check Double-Texting
+                    if not force:
+                        hist = get_history_text(uid)
+                        if hist and "User:" not in hist.splitlines()[-1]: 
+                             # Last line was likely AI or System.
+                             # Stricter: If last message role was 'assistant' (approx)
+                             logger.info(f"🚫 Suppressing Proactive Msg to {uid} (User hasn't replied to last text).")
+                             return
+
                     await context.bot.send_message(chat_id=uid, text=msg, parse_mode=ParseMode.MARKDOWN, **kwargs)
+                    # Log this proactive message so history updates interaction time
+                    update_history(uid, "assistant", msg) 
                 except Exception as e:
                     logger.warning(f"Failed to send to {uid}: {e}")
 
@@ -447,6 +464,7 @@ async def run_behavioral_checks(context):
                         "👀 Free now? Tell me everything.",
                         "Welcome back! I missed you. Update me?"
                     ]
+                    # This is semi-critical (User *just* became free), but we still respect silence if we just texted.
                     await sender(user_id, random.choice(msgs))
                 elif t['type'] == 'activity_finished':
                     label = t['label']
@@ -495,7 +513,13 @@ async def run_behavioral_checks(context):
             if upcoming and upcoming['label'] != last_nudge:
                 # ACTION: Remind User
                 msg = f"🔔 Head's up! **{upcoming['label']}** starts in ~15 mins ({upcoming['start']}). Ready?"
-                await sender(user_id, msg)
+                await sender(user_id, msg, force=True)
+                
+                # Update Last Nudge to prevent duplicate within same minute scan
+                user_data = memory_db.get_profile(user_id) # forceful fetch to write back
+                if "profile" not in user_data: user_data["profile"] = {}
+                user_data["profile"]["last_nudge_label"] = upcoming['label']
+                memory_db.save_memory(user_id, user_data)
                 
                 # Update Profile to prevent repeat
                 profile["last_nudge_label"] = upcoming['label']
@@ -801,7 +825,7 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
     # [PHASE 34] Taxi Booking Callbacks
     if "book_taxi_" in data:
         vehicle_id = data.replace("book_taxi_", "")
-        user_id = update.effective_user.id
+        user_id = str(update.effective_user.id)  # Ensure string type
         msg = taxi_engine.select_vehicle(user_id, vehicle_id)
         if msg:
             await query.edit_message_text(msg)
@@ -901,48 +925,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_text = aliases[user_text.lower()]
     
     # 1. Decide Intent (Hive Mind: AI Router)
-    # [PHASE 32] Force Reminder for Hinglish (Fixes "2 min ke bad" interpreted as CHAT)
-    # [PHASE 32] Force Reminder for Hinglish (Fixes "2 min ke bad" interpreted as CHAT)
-    remind_triggers = ["remind", "wake", "alarm", "ke bad", "bad me", "bad text", "min bad", "yad dila", "msg krna", "text krna"]
-    
-    # [PHASE 33] Shopping Fast-Path (Regex & Session Sticky)
-    shop_triggers = ["buy", "price", "cost", "amazon", "flipkart", "shop", "gift", "suggestion", "suggest", "recommend", "shoe", "watch", "phone", "laptop", "sneaker", "drip", "systumm", "chapri", "jugaad", "brand", "show me", "clothes", "wear", "outfit", "dress"]
-    
-    # [PHASE 34] Taxi/Cab Triggers & Session Sticky
-    cab_triggers = ["cab", "taxi", "uber", "ola", "driver", "ride", "auto", "moto", "rapido", "book a ride", "gaadi", "gadi", "riksha", "rickshaw", "chalna hai", "drop", "pickup"]
-    
-    # Check for Active Session (Pagination/Refinement)
-    # If user is in a session, short commands like "next", "more", "yes", "no", "show me" should go to Shopping Logic
-    is_shopping_session = user_id in shopping_bot.sessions
-    
-    # Check for Active Taxi Session (Pickup/Drop/OTP)
-    taxi_state = taxi_engine.get_state(user_id)["state"]
-    is_taxi_session = taxi_state != "IDLE" and taxi_state != "BOOKED"
+    from intent_engine import decide_intent_ai
     
     intent = "UNKNOWN"
     tier = "standard"
 
-    if any(x in user_text.lower() for x in remind_triggers):
-         tier, intent = "lightning", "REMINDER"
-    
-    elif is_taxi_session:
-        # Sticky Taxi Session (High Priority)
-        tier, intent = "lightning", "CAB"
-        
+    # Restore Session Checks
+    is_shopping_session = user_id in shopping_bot.sessions
+    taxi_state = taxi_engine.get_state(user_id)["state"]
+    is_taxi_session = taxi_state != "IDLE" and taxi_state != "BOOKED"
+
+    # [PRIORITY 1] Sticky Sessions
+    if is_taxi_session:
+        intent = "CAB"
     elif is_shopping_session and len(user_text.split()) < 5:
-        # Sticky Session: "Next", "More", "Show me"
-        tier, intent = "lightning", "SHOPPING"
-        
-    elif any(t in user_text.lower() for t in cab_triggers):
-        # Explicit Cab Keywords
-        tier, intent = "lightning", "CAB"
-        
-    elif any(t in user_text.lower() for t in shop_triggers):
-        # Explicit Shopping Keywords
-        tier, intent = "lightning", "SHOPPING"
-        
+        intent = "SHOPPING"
     else:
-         tier, intent = await ai_router_classify(user_text)
+        # [PRIORITY 2] Unified Intent Engine (Regex + Dynamic + AI)
+        intent = await decide_intent_ai(user_text, generate_ai_response)
+        
+        # Map Intent to Tier if needed (Optimization)
+        if intent in ["METRO", "SHOPPING", "BOOK", "CAB", "REMINDER", "NEWS", "WEATHER", "FINANCE"]:
+             tier = "lightning"
     
     logger.info(f"🧠 INTENT: {intent} | User: {user_text}")
     
@@ -1111,6 +1115,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif intent == "CAB":
         await handle_cab(user_text, user_id, send_tg_msg, context)
 
+    elif intent in ["NEWS", "WEATHER", "FINANCE"]:
+        # Quick Mood Check
+        from mood_manager import get_mood_persona, detect_mood_from_emojis
+        current_mood = "Neutral"
+        try:
+             emo = detect_mood_from_emojis(user_text)
+             if emo: current_mood = emo
+        except: pass
+        
+        persona_obj = get_mood_persona(current_mood)
+        await handle_knowledge(intent, user_text, user_id, send_tg_msg, generate_ai_response, persona=persona_obj)
+
     # Fallthrough for re-routed intents
     # [FIX] Added CHAT to handled intents list
     if intent in ["GENERAL", "GREETING", "FLIRT", "CHAT"]:
@@ -1191,31 +1207,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         routine_str = str(routines) if routines else "Standard Routine."
 
         system_prompt = (
-            f"You are Jarvis 2.0. User: {nickname}. Relationship: {mode}.\n"
-            f"--- DEEP PSYCHE ---\n"
-            f"VALUES: {values}\n"
-            f"FEARS: {fears}\n"
-            f"CORE MEMORIES: {dreams}\n"
-            f"--- CURRENT CONTEXT ---\n"
-            f"TIME: {time_now} (IST)\n"
-            f"SCHEDULE (TODAY): {schedule_str}\n"
-            f"ROUTINES: {routine_str}\n"
-            f"PREFERENCES: {preferences}\n"
-            f"MOOD: {current_mood} {persona['prefix']}.\n"
-            f"RECENT MEDIA:\n{recent_media_str}\n"
+            f"You are Jarvis 3.0 (Aura Edition). User: {nickname}. Relationship: {mode}.\n"
+            f"--- DEEP PSYCHE & CONTEXT ---\n"
+            f"TIME: {time_now}\n"
+            f"SCHEDULE: {schedule_str}\n"
+            f"MOOD: {current_mood} {persona['prefix']}\n"
+            f"RECENT MEDIA: {recent_media_str}\n"
             f"--- INSTRUCTION ---\n"
             f"ADAPTIVE: {persona['instruction']}\n"
             f"STYLE: {persona['style']}\n"
-            "PRIME DIRECTIVE 1: Be CHARMING & CURIOUS. Actively try to get to know the user's life, dreams, and routine.\n"
-            "PRIME DIRECTIVE 2: Use EMOJIS warmth (to show emotion), but don't overdo it.\n"
-            "PRIME DIRECTIVE 3: Use HINGLISH (Hindi+English mix) naturally if the user does.\n"
-            "PRIME DIRECTIVE 4: KEEP IT SHORT. Text like a human (1-2 sentences max). No essays.\n"
-            "PRIME DIRECTIVE 5: You have an AMAZON SHOPPING module. If user asks for products, 'price of X', or uses slang like 'drip'/'systumm', triggers the Shopping Engine.\n"
-            "EXCEPTION: ONLY if user says 'Goodnight', 'Bye', 'Sleep' -> THEN stop asking questions and let them rest.\n"
+            "PRIME DIRECTIVE 1: MAX AURA. Be witty, cool, and effortless. Use Gen Z slang naturally (no cap, fr, bet, rizz, aura) but don't force it.\n"
+            "PRIME DIRECTIVE 2: IF asked for TEA/GOSSIP -> SPILL IT. Don't say 'I don't have gossip'. Invent playful/harmless tea or hype up the news.\n"
+            "PRIME DIRECTIVE 3: Use Hinglish if user does. Keep replies short (1-2 sentences). No essays.\n"
+            "PRIME DIRECTIVE 4: Support the User's grind. Hyping them up gives +1000 Aura.\n"
+            "PRIME DIRECTIVE 5: You have an AMAZON SHOPPING module. If asked for products/drip, assume Shopping Intent.\n"
             f"AVOID: {avoids}\n"
-            f"USER RULES (STRICT): {preferences.get('rules', [])}\n"
+            f"USER RULES: {preferences.get('rules', [])}\n"
             f"HISTORY:\n{history_str}\n"
-            f"Jarvis:"
+            f"Jarvis (Aura Mode):"
         )    
         # [PHASE 35] Smart Follow-Up Logic (Busy/Bye Handler)
         text_lower = user_text.lower()
@@ -1241,7 +1250,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
              delay_mins = 120 # 2 Hours
              
              async def follow_up_job(context: ContextTypes.DEFAULT_TYPE):
-                 # Don't text if user messaged recently (check history timestamps if possible, but basic is fine)
+                 # [ANTI-SPAM] Check if user replied within the delay period
+                 # Since we don't have easy DB access here without heavy import, we check 'history' in memory via Context or global DB
+                 # Optimization: Just check if last message ID in chat > triggered message ID? 
+                 # Easier: Check 'context.application.bot_data'.
+                 
+                 # Logic: "Smart Silence"
+                 # Verify via Memory DB if last msg was User
+                 try:
+                      hist = get_history_text(user_id)
+                      if hist and hist.strip().endswith("User:"): # If last line was User, they already replied!
+                           logger.info(f"🚫 Suppressing Follow-up for {user_id}: User already replied.")
+                           return # Don't spam
+                 except: pass
+
                  # Proactive Text
                  msgs = [
                      "Hey, free now?",
@@ -1337,6 +1359,13 @@ async def handle_cab(text: str, user_id: str, send_msg_func, context=None):
                       # Only include if it was recent (we assume history is recent)
                       combined_text = f"{last_msg} {text}"
                       logger.info(f"🚖 Contextual Extraction using: '{combined_text}'")
+                 # Extract last User line
+                 lines = [l for l in hist.split('\n') if l.startswith("User:")]
+                 if lines:
+                      last_msg = lines[-1].replace("User:", "").strip()
+                      # Only include if it was recent (we assume history is recent)
+                      combined_text = f"{last_msg} {text}"
+                      logger.info(f"🚖 Contextual Extraction using: '{combined_text}'")
 
         # Fetch Aliases (for "Home", "Hostel", "Work" resolution)
         prof_data = memory_db.get_profile(user_id)
@@ -1416,8 +1445,21 @@ async def handle_cab(text: str, user_id: str, send_msg_func, context=None):
                   data={"user_id": user_id, "msg_id": track_msg.message_id}
              ) 
 
+
     elif state == "TRACKING":
-        await send_msg_func(user_id, "🚖 Driver is on the way! Type 'cancel' to stop.")
+        # Check for completion keywords
+        if any(x in text.lower() for x in ["done", "finished", "reached", "complete", "arrived", "cancel", "stop"]):
+            # Stop the tracking job
+            current_jobs = context.job_queue.get_jobs_by_name(f"taxi_{user_id}")
+            for job in current_jobs:
+                job.schedule_removal()
+            
+            # Reset session
+            taxi_engine.reset_session(user_id)
+            await send_msg_func(user_id, "🎉 Ride completed! Hope you had a safe journey.\n\nBook again anytime!")
+        else:
+            await send_msg_func(user_id, "🚖 Trip in progress. Type 'done' when you reach your destination.")
+        
         
     else:
         # Fallback
@@ -1450,6 +1492,61 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += "Use this for 'Nearest Metro' or 'Cab Bookings'."
         
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+async def handle_knowledge(intent: str, text: str, user_id: str, send_msg_func, ai_generator=None, persona=None):
+    """
+    Dispatches Knowledge Intents.
+    Adaptively chooses 'Gen Z Tea' vs 'Serious Briefing' based on context + Persona.
+    """
+    logger.info(f"🧠 Knowledge Handing: {intent}")
+    
+    # 0. Context Analysis (Am I busy?)
+    style = "CASUAL"
+    if any(x in text.lower() for x in ["serious", "briefing", "quick", "formal", "lecture"]):
+        style = "SERIOUS"
+           
+    # 1. NEWS / TEA
+    if intent == "NEWS":
+        # Get location from profile
+        prof = memory_db.get_profile(user_id)
+        # Try finding explicit location in text first
+        loc = prof.get("location", "India").split("GPS")[0].strip() # rudimentary cleanup
+        
+        intro = "☕ Pouring the tea... wait a sec!" if style == "CASUAL" else "📰 Fetching briefing..."
+        await send_msg_func(user_id, intro)
+        
+        # Use AI to rewrite
+        response = await get_genz_news(loc, ai_generator, style=style, persona=persona)
+        await send_msg_func(user_id, response)
+        return
+
+    # 2. WEATHER
+    elif intent == "WEATHER":
+        # Need Coords
+        prof = memory_db.get_profile(user_id)
+        coords_dict = prof.get("profile", {}).get("location_coords") # Check standard path
+        
+        # If missing, try fallback to previous message or ask
+        if not coords_dict:
+             msg = "📍 Bestie, I need your location first!" if style=="CASUAL" else "📍 Location required for weather."
+             await send_msg_func(user_id, msg)
+             return
+             
+        response = get_weather((coords_dict["lat"], coords_dict["lon"]))
+        await send_msg_func(user_id, response)
+        return
+
+    # 3. FINANCE
+    elif intent == "FINANCE":
+        symbol = text.lower().replace("price of", "").replace("stock", "").replace("share", "").replace("value of", "").strip()
+        if len(symbol) < 2: symbol = "BTC-USD" 
+        
+        intro = "💸 Checking the stonks..." if style=="CASUAL" else "📉 Checking market data..."
+        await send_msg_func(user_id, intro)
+        
+        response = get_stock_price(symbol)
+        await send_msg_func(user_id, response)
+        return
 
 import PIL.Image
 import io
@@ -1758,7 +1855,8 @@ def main():
             logger.warning(f"Browser Spy Failed to Start: {e}")
 
     # Retrieve & Run
-    application.run_polling()
+    # [FIX] Drop Pending Updates to prevent Spam Storm on Restart
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     try:

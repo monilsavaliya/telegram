@@ -42,20 +42,48 @@ async def decide_intent_ai(text: str, ai_generator=None) -> str:
     if any(k in text_lower for k in ["remind me", "wake me up", "text me at", "alarm at", "ping me at"]):
         return "REMINDER"
 
+    # 6. KNOWLEDGE (Explicit)
+    if "weather" in text_lower or "temperature" in text_lower: return "WEATHER"
+    if "stock" in text_lower or "price of" in text_lower or "bitcoin" in text_lower: return "FINANCE"
+    if any(x in text_lower for x in ["news", "headline", "gossip", "tea", "update me", "whats happening"]): return "NEWS"
+
+    # --- LOAD DYNAMIC INTENTS ---
+    import json, os
+    learned_examples = ""
+    try:
+        if os.path.exists("learned_intents.json"):
+            with open("learned_intents.json", "r") as f:
+                intents_db = json.load(f)
+                # Create a mini-string of examples
+                learned_examples = "\n".join([f"- Input: '{k}' -> {v}" for k, v in intents_db.items()])
+    except:
+        pass
+
     # --- LAYER 2: AI ROUTER (Hive Mind) ---
     # Only use AI if regex failed (GENERAL) and we have a generator
     if ai_generator:
         try:
             prompt = (
                 f"Classify this User Message into one of these INTENTS:\n"
-                f"[METRO, SHOPPING, BOOK, CAB, MOVIE, REMINDER, GENERAL]\n\n"
+                f"[METRO, SHOPPING, BOOK, CAB, MOVIE, REMINDER, GENERAL, NEWS, WEATHER, FINANCE]\n\n"
                 f"Message: '{text}'\n\n"
+                f"Learned Context & Indirect Examples:\n"
+                f"{learned_examples}\n"
+                f"- 'I am bored' -> MOVIE\n"
+                f"- 'Suggest a film' -> MOVIE\n"
+                f"- 'My head hurts' / 'I need medicine' -> SHOPPING\n"
+                f"- 'I need to fly' / 'Airport' -> CAB\n"
+                f"- 'Its too hot' -> WEATHER\n"
+                f"- 'Did you hear that?' -> NEWS\n\n"
                 f"Rules:\n"
                 f"- If asking for travel/route/navigation OR preferences like 'fastest', 'min exchange' -> METRO\n"
                 f"- If wanting to buy/check price -> SHOPPING\n"
                 f"- If wanting to reading/find book -> BOOK\n"
                 f"- If asking for taxi/uber OR generic travel (e.g. 'go to start', 'take me to X', 'I want to go to Y') -> CAB\n"
                 f"- If asking to set an alarm/reminder/wake up -> REMINDER\n"
+                f"- If asking for News, Gossip, Tea, 'What's happing' -> NEWS\n"
+                f"- If asking for Weather, Rain, Temperature -> WEATHER\n"
+                f"- If asking for Stock Price, Market, Crypto -> FINANCE\n"
                 f"- If casual chat/greeting -> GENERAL\n"
                 f"Reply ONLY with the Intent Word."
             )
@@ -63,7 +91,7 @@ async def decide_intent_ai(text: str, ai_generator=None) -> str:
             ai_verdict = await ai_generator(prompt, tier="lightning")
             ai_verdict = ai_verdict.upper().strip().replace(".", "")
             
-            valid_intents = ["METRO", "SHOPPING", "BOOK", "CAB", "MOVIE", "REMINDER", "GENERAL"]
+            valid_intents = ["METRO", "SHOPPING", "BOOK", "CAB", "MOVIE", "REMINDER", "GENERAL", "NEWS", "WEATHER", "FINANCE"]
             if ai_verdict in valid_intents:
                 logger.info(f"🧠 AI Router: '{text}' -> {ai_verdict}")
                 return ai_verdict

@@ -1,0 +1,16 @@
+{
+    "bored": "MOVIE",
+    "suggest something to watch": "MOVIE",
+    "i need a ride": "CAB",
+    "go home": "CAB",
+    "take me away": "CAB",
+    "wake me up": "REMINDER",
+    "remind me": "REMINDER",
+    "price of": "FINANCE",
+    "stock market": "FINANCE",
+    "weather like": "WEATHER",
+    "is it raining": "WEATHER",
+    "news update": "NEWS",
+    "gossip": "NEWS",
+    "tea": "NEWS"
+}
