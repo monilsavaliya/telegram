@@ -1036,23 +1036,36 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # 5. Call Vision Model (Directly using genai lib for Vision)
     import google.generativeai as genai
-    genai.configure(api_key=PRIMARY_KEYS[0]) # Use Primary Key
+    
+    # [PHASE 36] Robust Key Selection
+    # If PRIMARY_KEYS[0] is failing (404), we need to try others or warn user.
+    key_to_use = PRIMARY_KEYS[0] 
+    if not key_to_use.startswith("AIza"): 
+         await update.message.reply_text("⚠️ Vision Error: Invalid Gemini API Key (Must start with 'AIza'). Check .env")
+         return
+
+    genai.configure(api_key=key_to_use)
     model = genai.GenerativeModel('gemini-1.5-flash')
     
     await update.message.reply_text("👀 Analyzing visual data...", parse_mode=ParseMode.MARKDOWN)
     
     try:
         response = model.generate_content([prompt, img])
-        reply = response.text
-        
-        # Update History
-        update_history(user_id, "user", f"[SENT_IMAGE]: {caption}")
-        update_history(user_id, "ai", reply)
-        
-        await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
+        if response.text:
+            reply = response.text
+            
+            # Update History
+            update_history(user_id, "user", f"[SENT_IMAGE]: {caption}")
+            update_history(user_id, "ai", reply)
+            
+            await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await update.message.reply_text("⚠️ Image accepted, but AI returned silence.")
+            
     except Exception as e:
         logger.error(f"Vision Error: {e}")
-        await update.message.reply_text("⚠️ Vision Systems Offline. (Error processing image)")
+        # Show specific error to user for debugging (TEMPORARY)
+        await update.message.reply_text(f"⚠️ Vision Failed: {str(e)}")
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
