@@ -38,11 +38,13 @@ async def generate_proactive_thought(user_id, profile, ai_generator, time_contex
             f"Roles Available:\n"
             f"1. PARTNER: Intimate, caring, asks about feelings. (Use if user was sad/tired/night time)\n"
             f"2. BUDDY: Fun, casual, shares memes/random thoughts. (Use if user is bored/afternoon)\n"
-            f"3. FATHER: Wise, guiding, protective. (Use if user needs advice/morning motivation)\n\n"
+            f"3. FATHER: Wise, guiding, protective. (Use if user needs advice/morning motivation)\n"
+            f"   - NOTE: Don't just say 'Good Morning' if he's already awake. Be specific.\n\n"
             f"Decision Protocol:\n"
-            f"1. Is silence better? (If yes, output SILENCE)\n"
+            f"1. Is silence better? (Output SILENCE if user is busy, sleeping, or we spoke recently and nothing new happened)\n"
             f"2. If speaking, pick the BEST Role based on context.\n"
             f"3. Write the message. It must follow the thread of recent chat (if relevant) or start a new valuable one.\n"
+            f"CRITICAL: Do NOT output your reasoning. Output ONLY the message text prefixed by the role.\n"
             f"OUTPUT FORMAT: [ROLE] Message text..."
         )
 

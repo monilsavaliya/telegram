@@ -362,19 +362,49 @@ async def run_behavioral_checks(context):
             # [PHASE 23] Deep Proactive Thought Bubble (The "Best" Update)
             # This allows the AI to decide autonomously if it wants to speak
             from behavior_engine import generate_proactive_thought
+            import pytz
             
             # Retrieve Minimal Context for Thought Generation
             profile_data = memory_db.get_profile(user_id) # Safe fetch
             profile = profile_data.get("profile", {})
+            preferences = profile_data.get("preferences", {})
+
+            # Timezone Fix (IST)
+            IST = pytz.timezone('Asia/Kolkata')
+            now_ist = datetime.now(IST)
             
-            # Simple Context
-            time_context = datetime.now().strftime("%I:%M %p")
-            loc_context = profile.get("location", "Unknown")
+            # Anti-Spam Check (4 Hour Cooldown)
+            last_ts_str = profile.get("last_proactive_ts")
+            should_skip = False
+            if last_ts_str:
+                try:
+                    last_ts = datetime.fromisoformat(last_ts_str)
+                    if last_ts.tzinfo is None:
+                        last_ts = IST.localize(last_ts) # Assume IST if naive
+                    
+                    if now_ist - last_ts < timedelta(minutes=30):
+                        should_skip = True
+                except:
+                    pass
             
-            thought_msg = await generate_proactive_thought(user_id, profile, generate_ai_response, time_context, loc_context)
-            if thought_msg:
-                 logger.info(f"💡 Proactive Thought for {user_id}: {thought_msg}")
-                 await sender(user_id, thought_msg)
+            if not should_skip:
+                # Simple Context
+                time_context = now_ist.strftime("%I:%M %p")
+                
+                # Pass Last Interaction Time to Engine so it knows if it's being annoying
+                thought_msg = await generate_proactive_thought(
+                    user_id, profile_data, generate_ai_response, 
+                    time_context, loc_context=preferences.get("location_name", "India")
+                )
+                if thought_msg:
+                     logger.info(f"💡 Proactive Thought for {user_id}: {thought_msg}")
+                     await sender(user_id, thought_msg)
+                     
+                     # 💾 UPDATE LAST PROACTIVE TIMESTAMP (Critical to stop loop)
+                     profile["last_proactive_ts"] = now_ist.isoformat()
+                     # Merge back to save (Hack since we split get_profile)
+                     profile_data["profile"] = profile
+                     memory_db.save_memory(user_id, profile_data)
 
         # 2. THE ANALYST
         now_min = datetime.now().minute
@@ -846,9 +876,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"MOOD: {current_mood} {persona['prefix']}.\n"
             f"RECENT MEDIA:\n{recent_media_str}\n"
             f"--- INSTRUCTION ---\n"
-            f"ADAPTIVE: {persona['instruction']}\n"
-            f"STYLE: {persona['style']}\n"
-            f"ADAPTIVE: {persona['instruction']}\n"
             f"ADAPTIVE: {persona['instruction']}\n"
             f"STYLE: {persona['style']}\n"
             "PRIME DIRECTIVE 1: Be CHARMING & CURIOUS. Actively try to get to know the user's life, dreams, and routine.\n"
