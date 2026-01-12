@@ -277,4 +277,34 @@ class DatabaseAdapter:
             return []
 
 # Singleton Global Instance
+    # --- HISTORY METHODS ---
+    def add_history(self, user_id, role, content):
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO history (user_id, role, content, timestamp)
+                    VALUES (?, ?, ?, ?)
+                ''', (user_id, role, content, datetime.datetime.now().isoformat()))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"DB History Write Error: {e}")
+
+    def get_history(self, user_id, limit=10):
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT role, content FROM history
+                    WHERE user_id = ?
+                    ORDER BY id DESC LIMIT ?
+                ''', (user_id, limit))
+                rows = cursor.fetchall()
+                # Reverse to chronological order
+                return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
+        except Exception as e:
+            logger.error(f"DB History Read Error: {e}")
+            return []
+
+# Singleton Global Instance
 db = DatabaseAdapter()

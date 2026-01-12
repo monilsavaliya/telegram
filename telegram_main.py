@@ -7,6 +7,7 @@ import urllib.parse
 import traceback
 import io
 import PIL.Image
+import pytz
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.constants import ParseMode
@@ -21,7 +22,8 @@ from network_utils import safe_post, KeyManager, close_client
 from metro_engine import handle_metro, METRO_GRAPH
 from shopping_engine import handle_shopping, generate_amazon_link
 from intent_engine import decide_intent_ai
-from memory_core import db as memory_db
+from memory_core import memory_db
+from gemini_engine import generate_gemini_text, generate_gemini_vision
 
 # ==========================================
 # CONFIGURATION
@@ -29,11 +31,11 @@ from memory_core import db as memory_db
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 
 # GROQ KEYS (Llama 3)
-GROQ_API_KEYS = os.getenv("GROQ_KEYS", "").split(",")
+GROQ_API_KEYS = [k.strip() for k in os.getenv("GROQ_KEYS", "").split(",") if k.strip()]
 
 mgr_groq = KeyManager(GROQ_API_KEYS)
 
-GEMINI_API_KEYS = os.getenv("GEMINI_KEYS", "").split(",")
+GEMINI_API_KEYS = [k.strip() for k in os.getenv("GEMINI_KEYS", "").split(",") if k.strip()]
 
 # Split Keys: Primary for Chat, Background for Subconscious/Analysis
 # Ensure we have enough keys
@@ -51,11 +53,11 @@ mgr_background = KeyManager(BACKGROUND_KEYS)
 # Tiered Models
 # Tiered Models
 MODEL_TIERS = {
-    "router": ["gemini-flash-latest"], # Fast routing
-    "lightning": ["gemini-flash-latest"], # Fast responses
-    "standard": ["gemini-flash-latest"], # Balanced
-    "premium": ["gemini-2.0-flash-lite", "gemini-1.5-pro"], # Complex reasoning
-    "vision": ["gemini-flash-latest"] # Images
+    "router": ["gemini-2.5-flash"], 
+    "lightning": ["gemini-2.5-flash"], 
+    "standard": ["gemini-2.5-flash"], 
+    "premium": ["gemini-2.5-pro"],
+    "vision": ["gemini-2.5-flash"]
 }
 
 # Router Key (Dedicated)
@@ -79,7 +81,8 @@ async def ai_router_classify(user_text):
             return "lightning", "REMINDER"
         
         # Use verified model name (Alias)
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={ROUTER_KEY}"
+        # [REST STRICT]
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={ROUTER_KEY}"
         prompt = (
             f"Classify Query: '{user_text}'\n"
             "Intents: SHOPPING, METRO, MOVIE, CAB, REMINDER, GENERAL, EMOTIONAL_SUPPORT.\n"
@@ -108,36 +111,111 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 # ==========================================
-# CORE BRAIN (HYBRID: GROQ + GEMINI)
+# CRITICAL: DIE HARD KEY MANAGER
 # ==========================================
+from key_manager import key_manager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+# Note: genai SDK Replaced by gemini_engine (REST)
+
+async def generate_ai_response(prompt, tier="standard"):
+    """
+    Hybrid Brain: Gemini Flash (REST) -> Groq (Backup)
+    Uses KeyManager for load balancing.
+    """
+    # [PHASE 40] Fast Path: Use Groq for 'lightning' tier (User Request)
+    if tier == "lightning":
+        # [SMART LOAD BALANCING]
+        # Start at a random key index to distribute load across all keys in parallel
+        # This prevents "Key 1" from taking all hits.
+        import random
+        keys = mgr_groq.api_keys # Access raw list
+        if keys:
+            start_index = random.randint(0, len(keys) - 1)
+            # Create rotated list starting from random index
+            rotated_keys = keys[start_index:] + keys[:start_index]
+            
+            for key in rotated_keys:
+                try:
+                     # Minimal Groq Client
+                     from groq import Groq
+                     client = Groq(api_key=key)
+                     
+                     completion = client.chat.completions.create(
+                         model="llama-3.3-70b-versatile",
+                         messages=[{"role": "user", "content": prompt}],
+                         temperature=0.7,
+                         max_tokens=150 # Short/Concise for Chat
+                     )
+                     return completion.choices[0].message.content
+                except Exception as e:
+                     logger.warning(f"⚡ Groq Key {key[:8]} Failed: {e}")
+                     mgr_groq.mark_failed(key)
+                     # Continue to next key
+            
+            logger.warning("⚡ All Groq Keys exhausted. Falling back to Gemini.")
+        else:
+             logger.warning("⚡ No Groq Keys found. Falling back.")
+        
+        # Fallback to Gemini continues below...
+
+    # 1. Try Gemini with Rotating Keys
+    retries = 2
+    for attempt in range(retries):
+        key = key_manager.get_key("chat")
+        if not key: break
+        
+        try:
+            # Call Pure REST Engine
+            text = await generate_gemini_text(prompt, key, model="gemini-2.5-flash")
+            
+            if text:
+                return text
+            else:
+                # If None returned, it failed silently or empty
+                raise Exception("Empty REST response")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Gemini Key {key[:8]} Failed: {e}")
+            key_manager.mark_failed(key)
+            # Loop to next key
+            
+    # 2. Fallback to Groq (If ALL Gemini keys fail)
+    logger.info("🔥 Gemini Failed. Falling back to Groq.")
+    try:
+        # Implement Groq fallback here or return error
+        # For brevity, assuming simple fallback logic exists or importing it
+        from groq import Groq
+        key = mgr_groq.get_key("chat")
+        if key:
+             client = Groq(api_key=key)
+             completion = client.chat.completions.create(
+                 model="llama3-70b-8192",
+                 messages=[{"role": "user", "content": prompt}],
+                 temperature=0.7,
+                 max_tokens=800
+             )
+             return completion.choices[0].message.content
+        return "⚠️ Brain Offline (Both Gemini & Groq Failed)."
+    except:
+        return "⚠️ Brain Completely Offline."
 # ==========================================
 # STATE MANAGEMENT (CHAT HISTORY)
 # ==========================================
-CHAT_HISTORY = {} # {user_id: [("user", "msg"), ("ai", "msg")]}
+# CHAT_HISTORY removed in favor of DB persistence
 scheduler = AsyncIOScheduler()
 
 def update_history(user_id, role, text):
-    """Keeps last 5 exchanges for context."""
-    if user_id not in CHAT_HISTORY:
-        CHAT_HISTORY[user_id] = []
-    
-    CHAT_HISTORY[user_id].append((role, text))
-    # Keep last 10 messages (5 turns)
-    if len(CHAT_HISTORY[user_id]) > 10:
-        CHAT_HISTORY[user_id].pop(0)
+    """Logs to Brain DB (Persistent)."""
+    memory_db.log_chat(user_id, role, text)
 
 def get_history_text(user_id):
-    """Formats history for the AI Prompt."""
-    if user_id not in CHAT_HISTORY: return ""
-    
-    lines = []
-    for role, text in CHAT_HISTORY[user_id]:
-        label = "User" if role == "user" else "Jarvis"
-        lines.append(f"{label}: {text}")
+    """Fetches from Brain DB (Persistent)."""
+    return memory_db.get_recent_context(user_id, limit=10)
     return "\n".join(lines)
 
 # ==========================================
@@ -369,9 +447,40 @@ async def run_behavioral_checks(context):
             profile = profile_data.get("profile", {})
             preferences = profile_data.get("preferences", {})
 
+            # [PHASE 37] Timetable Check (Dynamic)
+            from timetable_manager import timetable_manager
+            
             # Timezone Fix (IST)
             IST = pytz.timezone('Asia/Kolkata')
             now_ist = datetime.now(IST)
+            
+            # 1. Check for Pre-Class Nudges (15 mins before)
+            upcoming = timetable_manager.get_upcoming_event(now_ist, buffer_minutes=15)
+            # Check if we already notified for this specific event to prevent spam
+            # We use a volatile memory for this: notified_events = set() (need global or profile storage)
+            # Hack: Store in profile transiently
+            last_nudge = profile.get("last_nudge_label", "")
+            
+            if upcoming and upcoming['label'] != last_nudge:
+                # ACTION: Remind User
+                msg = f"🔔 Head's up! **{upcoming['label']}** starts in ~15 mins ({upcoming['start']}). Ready?"
+                await sender(user_id, msg)
+                
+                # Update Profile to prevent repeat
+                profile["last_nudge_label"] = upcoming['label']
+                memory_db.save_memory(user_id, profile_data)
+                return # Skip standard thought generation if we just nudged
+                
+            # 2. Morning Brief (8:00 AM)
+            if now_ist.hour == 8 and now_ist.minute == 0:
+                events = timetable_manager.get_day_events(now_ist.strftime("%A"))
+                if events:
+                    schedule_str = "\n".join([f"• {e['start']} - {e['label']}" for e in events])
+                    await sender(user_id, f"☀️ **Good Morning!**\n\nHere is your plan for today:\n{schedule_str}\n\nLet's crush it! 💪")
+                    return
+
+            is_busy, busy_label = timetable_manager.is_busy(now_ist)
+            timetable_context = f"Busy ({busy_label})" if is_busy else "Free"
             
             # Anti-Spam Check (4 Hour Cooldown)
             last_ts_str = profile.get("last_proactive_ts")
@@ -826,6 +935,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context_data = profile.get("context", {})
         media_history = context_data.get("media_history", [])
         psych_profile = profile.get("psych_profile", {})
+        preferences = profile.get("preferences", {}) # Fix NameError
         
         # Deep Insights
         values = ", ".join(psych_profile.get("values", []))
@@ -866,6 +976,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         persona = get_mood_persona(current_mood)
 
+        # 2. SYSTEM PROMPT (Deep Persona)
+        IST = pytz.timezone('Asia/Kolkata')
+        time_now = datetime.now(IST).strftime("%I:%M %p, %A, %d %b %Y")
+        
+        # [PHASE 39] Context Injection (Timetable + Routine)
+        from timetable_manager import timetable_manager
+        from routine_manager import routine_db
+        
+        day_name = datetime.now(IST).strftime("%A")
+        todays_events = timetable_manager.get_day_events(day_name)
+        schedule_str = "\n".join([f"- {e['start']}: {e['label']}" for e in todays_events]) if todays_events else "No fixed events."
+        
+        routines = routine_db.get_routines()
+        routine_str = str(routines) if routines else "Standard Routine."
+
         system_prompt = (
             f"You are Jarvis 2.0. User: {nickname}. Relationship: {mode}.\n"
             f"--- DEEP PSYCHE ---\n"
@@ -873,19 +998,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"FEARS: {fears}\n"
             f"CORE MEMORIES: {dreams}\n"
             f"--- CURRENT CONTEXT ---\n"
+            f"TIME: {time_now} (IST)\n"
+            f"SCHEDULE (TODAY): {schedule_str}\n"
+            f"ROUTINES: {routine_str}\n"
+            f"PREFERENCES: {preferences}\n"
             f"MOOD: {current_mood} {persona['prefix']}.\n"
             f"RECENT MEDIA:\n{recent_media_str}\n"
             f"--- INSTRUCTION ---\n"
             f"ADAPTIVE: {persona['instruction']}\n"
             f"STYLE: {persona['style']}\n"
             "PRIME DIRECTIVE 1: Be CHARMING & CURIOUS. Actively try to get to know the user's life, dreams, and routine.\n"
-            "PRIME DIRECTIVE 2: Use EMOJIS warmly (to show emotion), but don't overdo it.\n"
+            "PRIME DIRECTIVE 2: Use EMOJIS warmth (to show emotion), but don't overdo it.\n"
             "PRIME DIRECTIVE 3: Use HINGLISH (Hindi+English mix) naturally if the user does.\n"
+            "PRIME DIRECTIVE 4: KEEP IT SHORT. Text like a human (1-2 sentences max). No essays.\n"
             "EXCEPTION: ONLY if user says 'Goodnight', 'Bye', 'Sleep' -> THEN stop asking questions and let them rest.\n"
             f"AVOID: {avoids}\n"
             f"HISTORY:\n{history_str}\n"
             f"Jarvis:"
-            
+        )    
         # [PHASE 35] Smart Follow-Up Logic (Busy/Bye Handler)
         # If user says "Bye" during the day, we check back in 2 hours.
         text_lower = user_text.lower()
@@ -909,7 +1039,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  
              context.job_queue.run_once(follow_up_job, delay_mins * 60)
              logger.info(f"⏳ Proactive Follow-up scheduled for {user_id} in {delay_mins} mins.")
-        )
     
         # 3. Inject History into Prompt
         final_prompt = f"{system_prompt}\n\nCONVERSATION HISTORY:\n{history_str}\n\nJarvis:"
@@ -1034,38 +1163,40 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Short & Concise."
     )
     
-    # 5. Call Vision Model (Directly using genai lib for Vision)
-    import google.generativeai as genai
+    # 5. Call Vision Model (Pure REST)
     
-    # [PHASE 36] Robust Key Selection
-    # If PRIMARY_KEYS[0] is failing (404), we need to try others or warn user.
-    key_to_use = PRIMARY_KEYS[0] 
-    if not key_to_use.startswith("AIza"): 
-         await update.message.reply_text("⚠️ Vision Error: Invalid Gemini API Key (Must start with 'AIza'). Check .env")
+    # [PHASE 38] Key Manager for Vision
+    key_to_use = key_manager.get_key("vision")
+    if not key_to_use:
+         await update.message.reply_text("⚠️ Vision Error: No API Keys available.")
          return
 
-    genai.configure(api_key=key_to_use)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    
     await update.message.reply_text("👀 Analyzing visual data...", parse_mode=ParseMode.MARKDOWN)
+
+    # Robust Model Selection Loop (REST Version)
+    # We loop models if one fails (handled inside engine? No, engine takes one model)
+    # But gemini_engine defaults to 1.5-pro. Let's try explicit loop if needed, 
+    # OR just trust 1.5-pro as per instruction.
+    # Instruction said: "Vision REST (recommended) ... Endpoint: ... gemini-1.5-pro"
     
-    try:
-        response = model.generate_content([prompt, img])
-        if response.text:
-            reply = response.text
+    reply = await generate_gemini_vision(prompt, photo_bytes, key_to_use, model="gemini-2.5-flash")
             
-            # Update History
-            update_history(user_id, "user", f"[SENT_IMAGE]: {caption}")
-            update_history(user_id, "ai", reply)
-            
-            await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
-        else:
-            await update.message.reply_text("⚠️ Image accepted, but AI returned silence.")
-            
-    except Exception as e:
-        logger.error(f"Vision Error: {e}")
-        # Show specific error to user for debugging (TEMPORARY)
-        await update.message.reply_text(f"⚠️ Vision Failed: {str(e)}")
+    if reply:
+        # Update History
+        update_history(user_id, "user", f"[SENT_IMAGE]: {caption}")
+        update_history(user_id, "ai", reply)
+        await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
+        
+        # [PHASE 42] Smart Vision Learning
+        # If the image was a schedule, try to learn from the description
+        try:
+            from behavior_engine import learn_schedule_from_text
+            await learn_schedule_from_text(reply, user_id, "VISION_EXTRACT")
+        except Exception as e:
+            logger.warning(f"Vision Learning Failed: {e}")
+    else:
+        logger.error(f"Vision Failed (REST).")
+        await update.message.reply_text("⚠️ Vision Failed (API Error).")
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1079,11 +1210,46 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # 2. Transcribe (Using Gemini Flash Audio Capabilities or Speech API)
     # For now, we will send to Gemini as a file part
-    import google.generativeai as genai
-    genai.configure(api_key=PRIMARY_KEYS[0])
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # [PHASE 38] Key Manager for Audio
+    key_to_use = key_manager.get_key("vision") 
+    if key_to_use:
+        genai.configure(api_key=key_to_use)
     
     msg = await update.message.reply_text("👂 Listening...", parse_mode=ParseMode.MARKDOWN)
+    
+    try:
+        # Save temp file logic...
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp:
+            temp.write(file_bytes)
+            temp_path = temp.name
+
+        gemini_file = genai.upload_file(temp_path, mime_type="audio/ogg")
+        prompt = "Listen to this audio and respond naturally as Jarvis."
+
+        # Robust Model Loop
+        potential_models = ['gemini-1.5-flash-latest', 'gemini-1.5-flash', 'gemini-1.5-flash-001']
+        response = None
+        
+        for m_name in potential_models:
+            try:
+                model = genai.GenerativeModel(m_name)
+                response = await model.generate_content_async([prompt, gemini_file])
+                if response and response.text: break
+            except: continue
+            
+        if response:
+            reply = response.text
+            await msg.edit_text(reply, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await msg.edit_text("⚠️ I couldn't process the audio (Models busy).")
+
+        os.remove(temp_path)
+
+    except Exception as e:
+        logger.error(f"Voice Error: {e}")
+        await msg.edit_text(f"⚠️ Audio Error: {str(e)}")
+    return # End function safely
     
     try:
         # We need to save bytes to a temp file for GenAI upload sometimes, 

@@ -123,4 +123,22 @@ class MemoryCoreWrapper:
             
         save_memory(user_id, data)
 
+    def log_chat(self, user_id, role, text):
+        db.add_history(user_id, role, text)
+
+    def get_recent_context(self, user_id, limit=10):
+        try:
+            history = db.get_history(str(user_id), limit=limit)
+            return "\n".join([f"{'User' if h['role']=='user' else 'Jarvis'}: {h['content']}" for h in history])
+        except Exception as e:
+            logger.error(f"Context Fetch Error: {e}")
+            return ""
+
+    def save_memory(self, user_id, data):
+        """Pass-through to global save_memory."""
+        save_memory(user_id, data)
+
+    def get_all_users(self):
+        return db.get_all_users()
+
 memory_db = MemoryCoreWrapper()

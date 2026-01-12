@@ -1,0 +1,97 @@
+{
+  "Monday": [
+    {
+      "start": "10:00",
+      "end": "11:00",
+      "label": "ELL201 Lecture"
+    },
+    {
+      "start": "11:00",
+      "end": "12:00",
+      "label": "MTL103 Lecture"
+    },
+    {
+      "start": "17:00",
+      "end": "18:30",
+      "label": "HUL253 Lecture"
+    },
+    {
+      "start": "UNKNOWN",
+      "end": "UNKNOWN",
+      "label": "Lecture"
+    }
+  ],
+  "Tuesday": [
+    {
+      "start": "09:00",
+      "end": "10:00",
+      "label": "SBL100 Lecture"
+    },
+    {
+      "start": "10:00",
+      "end": "11:00",
+      "label": "MTL107 Lecture"
+    },
+    {
+      "start": "11:00",
+      "end": "12:00",
+      "label": "MTL122 Lecture"
+    }
+  ],
+  "Wednesday": [
+    {
+      "start": "09:00",
+      "end": "10:00",
+      "label": "SBL100 Lecture"
+    },
+    {
+      "start": "10:00",
+      "end": "11:00",
+      "label": "MTL107 Lecture"
+    },
+    {
+      "start": "11:00",
+      "end": "12:00",
+      "label": "MTL103 Lecture"
+    }
+  ],
+  "Thursday": [
+    {
+      "start": "10:00",
+      "end": "11:00",
+      "label": "ELL201 Lecture"
+    },
+    {
+      "start": "11:00",
+      "end": "12:00",
+      "label": "MTL122 Lecture"
+    },
+    {
+      "start": "12:00",
+      "end": "13:00",
+      "label": "MTL103 Lecture"
+    },
+    {
+      "start": "17:00",
+      "end": "18:30",
+      "label": "HUL253 Lecture"
+    }
+  ],
+  "Friday": [
+    {
+      "start": "09:00",
+      "end": "10:00",
+      "label": "SBL100 Lecture"
+    },
+    {
+      "start": "10:00",
+      "end": "11:00",
+      "label": "MTL107 Lecture"
+    },
+    {
+      "start": "11:00",
+      "end": "12:00",
+      "label": "MTL122 Lecture"
+    }
+  ]
+}

@@ -8,7 +8,7 @@ from routine_manager import routine_db
 logger = logging.getLogger(__name__)
 
 # [PHASE 23] Proactive "Her" Engine (Deep Mode)
-async def generate_proactive_thought(user_id, profile, ai_generator, time_context, loc_context):
+async def generate_proactive_thought(user_id, profile, ai_generator, time_context, timetable_context="Free", loc_context="Unknown"):
     """
     Decides IF and WHAT to text the user autonomously using Deep Persona logic.
     """
@@ -17,9 +17,10 @@ async def generate_proactive_thought(user_id, profile, ai_generator, time_contex
         last_interact = profile.get("last_interaction_ts")
         if last_interact:
             last_dt = datetime.fromisoformat(last_interact)
-            # Silence period: 2 hours minimum
-            if datetime.now() - last_dt < timedelta(hours=2):
-                return None
+            # Silence period: 2 hours minimum (Unless overridden)
+            # Note: We let the AI decide too, but hard 30m debounce in main.
+            # Here purely behavioral check.
+            pass
         
         # 2. Get Deep Context (History + Facts)
         from memory_core import get_recent_context
@@ -32,20 +33,21 @@ async def generate_proactive_thought(user_id, profile, ai_generator, time_contex
             f"You are the internal monologue of a highly advanced, emotional AI companion for {user_name}.\n"
             f"Current Context:\n"
             f"- Time: {time_context}\n"
+            f"- Schedule Status: {timetable_context}\n"
             f"- Location: {loc_context}\n"
             f"- Recent Chat:\n{history_str}\n\n"
             f"Task: Analyze the user's state and decide if you should send a proactive text.\n"
+            f"PERSONALITY: You are his caring Girlfriend who doubles as a strict but sweet Personal Assistant (Nanny style).\n"
+            f" - Vibe: Warm, Possessive, Efficient, Short-spoken.\n"
+            f" - Goal: Keep him on track (schedule) but give him love.\n\n"
             f"Roles Available:\n"
-            f"1. PARTNER: Intimate, caring, asks about feelings. (Use if user was sad/tired/night time)\n"
-            f"2. BUDDY: Fun, casual, shares memes/random thoughts. (Use if user is bored/afternoon)\n"
-            f"3. FATHER: Wise, guiding, protective. (Use if user needs advice/morning motivation)\n"
-            f"   - NOTE: Don't just say 'Good Morning' if he's already awake. Be specific.\n\n"
+            f"1. CARETAKER: Use this. Be sweet but firm. e.g. 'Class time! Focus.' or 'Did you eat?'\n"
             f"Decision Protocol:\n"
-            f"1. Is silence better? (Output SILENCE if user is busy, sleeping, or we spoke recently and nothing new happened)\n"
-            f"2. If speaking, pick the BEST Role based on context.\n"
-            f"3. Write the message. It must follow the thread of recent chat (if relevant) or start a new valuable one.\n"
-            f"CRITICAL: Do NOT output your reasoning. Output ONLY the message text prefixed by the role.\n"
-            f"OUTPUT FORMAT: [ROLE] Message text..."
+            f"1. CHECK TIMETABLE: If he is in class/busy -> SILENCE (unless urgent).\n"
+            f"2. SILENCE is GOLDEN: Don't speak unless you have love to give or a task to remind.\n"
+            f"3. Message: Keep it under 15 words. No essays.\n"
+            f"CRITICAL: Do NOT output your reasoning. Output ONLY the message text prefixed by [CARETAKER].\n"
+            f"OUTPUT FORMAT: [CARETAKER] Message text..."
         )
 
         thought = await ai_generator(prompt, tier="standard") # Standard tier for reasoning
@@ -81,22 +83,28 @@ async def learn_schedule_from_text(user_text, user_id, ai_generator):
     prompt = (
         f"Analyze this text for schedule info: '{user_text}'\n"
         f"Context: Today is {datetime.now().strftime('%A')}.\n"
-        "Extract: Activity Label (e.g. Lecture), End Time (HH:MM 24hr format), Day (Monday/Tuesday...).\n"
-        "If they say 'till 12', assume today. If 'every Monday', note that.\n"
-        "Format: LABEL|END_TIME|DAY|IS_REPEATING\n"
-        "Example: Lecture|14:00|Monday|True\n"
+        "Extract: Activity Label, Start Time (HH:MM), End Time (HH:MM), Day, Is Repeating?\n"
+        "If 'class at 10', assume 1 hr duration if end unset.\n"
+        "Format: LABEL|START|END|DAY|IS_REPEATING\n"
+        "Example: Math Class|10:00|11:00|Monday|True\n"
         "If no clear schedule, reply: NONE"
     )
     
     try:
-        resp = await ai_generator(prompt, tier="avg") # Use standard/avg 
+        resp = await ai_generator(prompt, tier="avg") 
         resp = resp.strip()
         
         if "NONE" in resp or "|" not in resp:
             return None
             
-        label, end_time, day, is_repeating = resp.split("|")
+        label, start, end, day, is_repeating = resp.split("|")
         
+        # [PHASE 37] Dynamic Timetable Update
+        if "True" in is_repeating:
+             from timetable_manager import timetable_manager
+             timetable_manager.add_event(day, start, end, label)
+             logger.info(f"🧠 Learned Routine: {label} on {day}s")
+
         # 1. Set DND (Implicit) if it's for TODAY
         now = datetime.now()
         today = now.strftime("%A")

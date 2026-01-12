@@ -38,7 +38,10 @@ class RoutineManager:
 
     def _save_routines(self):
         with open(ROUTINE_FILE, 'w') as f:
-            json.dump(self.routines, f, indent=2)
+            json.dump(self.routines, f, indent=4)
+
+    def get_routines(self):
+        return self.routines
 
     def add_routine(self, user_phone, day_of_week, start_time, end_time, label):
         """
