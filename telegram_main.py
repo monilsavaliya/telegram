@@ -938,7 +938,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # [PRIORITY 1] Sticky Sessions
     if is_taxi_session:
         intent = "CAB"
-    elif is_shopping_session and len(user_text.split()) < 5:
+    elif is_shopping_session and any(x == user_text.lower() for x in ["next", "more", "prev", "back", "show me", "yes", "no", "1", "2", "3", "4", "5"]):
         intent = "SHOPPING"
     else:
         # [PRIORITY 2] Unified Intent Engine (Regex + Dynamic + AI)
